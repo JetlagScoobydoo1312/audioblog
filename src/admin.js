@@ -61,6 +61,13 @@ button.wide{width:100%;padding:.7rem;font-size:.85rem}
 .meta.warn{color:var(--hot)}
 .gate{max-width:22rem}
 .hint{font-size:.72rem;color:var(--faint);margin:.4rem 0 0}
+.eprow{display:flex;align-items:center;gap:.6rem;border-bottom:1px solid var(--ink);padding:.5rem 0}
+.eprow:last-of-type{border-bottom:0}
+.epmeta{flex:1;min-width:0;display:flex;flex-direction:column;gap:.1rem}
+.epmeta a{font-size:.85rem;color:var(--ink);word-break:break-word}
+.epmeta span{font-size:.7rem;color:var(--faint)}
+.eprow button{flex:0 0 auto;padding:.3rem .6rem;font-size:.7rem}
+.eprow button.armed{background:var(--hot);border-color:var(--hot);color:var(--paper)}
 </style>
 </head>
 <body>
@@ -118,8 +125,16 @@ button.wide{width:100%;padding:.7rem;font-size:.85rem}
 
   <button type="submit" id="go" class="wide">Udgiv</button>
   <div id="status"></div>
-  <p style="margin-top:1.5rem"><button type="button" class="ghost" id="forget">Glem nøglen på denne enhed</button></p>
 </form>
+
+<section id="manage" hidden>
+  <fieldset>
+    <legend>Udgivet</legend>
+    <div id="eplist"><p class="hint">henter…</p></div>
+    <p class="hint">Sletning fjerner både posten og de tilhørende lyd- og billedfiler. Kan ikke fortrydes.</p>
+  </fieldset>
+  <p style="margin-top:1.5rem"><button type="button" class="ghost" id="forget">Glem nøglen på denne enhed</button></p>
+</section>
 
 </div>
 <script>
@@ -131,8 +146,13 @@ var listEl = document.getElementById('blocks');
 var blocks = [];
 var audioDuration = null;
 
+var manage = document.getElementById('manage');
 function token(){ try { return localStorage.getItem(KEY) || ''; } catch(e){ return ''; } }
-function show(){ if (token()) { gate.hidden = true; form.hidden = false; } else { gate.hidden = false; form.hidden = true; } }
+function show(){
+  var on = !!token();
+  gate.hidden = on; form.hidden = !on; manage.hidden = !on;
+  if (on) loadList();
+}
 show();
 
 document.getElementById('unlock').addEventListener('click', function(){
@@ -291,6 +311,84 @@ function render(){
 }
 render();
 
+/* ---- oversigt og sletning ---- */
+var MONTHS = ['januar','februar','marts','april','maj','juni','juli','august','september','oktober','november','december'];
+function shortDate(iso, end){
+  var a = new Date(iso);
+  if (isNaN(a)) return '';
+  var s = a.getUTCDate() + '. ' + MONTHS[a.getUTCMonth()];
+  if (end) {
+    var b = new Date(end);
+    if (!isNaN(b) && !(b.getUTCDate() === a.getUTCDate() && b.getUTCMonth() === a.getUTCMonth())) {
+      s = a.getUTCMonth() === b.getUTCMonth()
+        ? a.getUTCDate() + '.–' + b.getUTCDate() + '. ' + MONTHS[a.getUTCMonth()]
+        : s + ' – ' + b.getUTCDate() + '. ' + MONTHS[b.getUTCMonth()];
+    }
+  }
+  return s;
+}
+
+async function loadList(){
+  var box = document.getElementById('eplist');
+  box.innerHTML = '<p class="hint">henter…</p>';
+  try {
+    var res = await fetch('/api/episodes', { headers: { 'authorization': 'Bearer ' + token() } });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Kunne ikke hente listen');
+    if (!data.episodes.length) { box.innerHTML = '<p class="hint">Intet udgivet endnu.</p>'; return; }
+
+    box.innerHTML = '';
+    data.episodes.forEach(function(ep){
+      var row = document.createElement('div');
+      row.className = 'eprow';
+
+      var meta = document.createElement('div');
+      meta.className = 'epmeta';
+      var t = document.createElement('a');
+      t.href = '/dag/' + ep.slug; t.textContent = ep.title; t.target = '_blank';
+      var sub = document.createElement('span');
+      var bits = [shortDate(ep.published_at, ep.date_end)];
+      if (ep.kind === 'note') bits.push('note');
+      if (!ep.has_audio && ep.kind !== 'note') bits.push('ingen lyd');
+      if (ep.comment_count) bits.push(ep.comment_count + ' kommentar' + (ep.comment_count === 1 ? '' : 'er'));
+      sub.textContent = bits.join(' · ');
+      meta.appendChild(t); meta.appendChild(sub);
+
+      var btn = document.createElement('button');
+      btn.type = 'button'; btn.className = 'ghost'; btn.textContent = 'Slet';
+      var armed = false, timer = null;
+      btn.addEventListener('click', async function(){
+        if (!armed) {
+          armed = true; btn.textContent = 'Sikker?'; btn.classList.add('armed');
+          timer = setTimeout(function(){ armed = false; btn.textContent = 'Slet'; btn.classList.remove('armed'); }, 4000);
+          return;
+        }
+        clearTimeout(timer);
+        btn.disabled = true; btn.textContent = 'sletter…';
+        try {
+          var r = await fetch('/api/episodes/' + ep.id, {
+            method: 'DELETE', headers: { 'authorization': 'Bearer ' + token() }
+          });
+          var d = await r.json();
+          if (!r.ok) throw new Error(d.error || 'Sletning mislykkedes');
+          row.remove();
+          if (!document.querySelectorAll('.eprow').length) {
+            box.innerHTML = '<p class="hint">Intet udgivet endnu.</p>';
+          }
+        } catch (err) {
+          btn.disabled = false; btn.textContent = 'Slet'; btn.classList.remove('armed');
+          armed = false; alert(err.message);
+        }
+      });
+
+      row.appendChild(meta); row.appendChild(btn);
+      box.appendChild(row);
+    });
+  } catch (err) {
+    box.innerHTML = '<p class="hint">' + err.message + '</p>';
+  }
+}
+
 /* ---- send ---- */
 form.addEventListener('submit', async function(e){
   e.preventDefault();
@@ -334,6 +432,7 @@ form.addEventListener('submit', async function(e){
     if (!res.ok) throw new Error(data.error || 'Upload mislykkedes');
     statusEl.className = 'ok';
     statusEl.innerHTML = 'Udgivet. <a href="/dag/' + data.slug + '">Se det</a>';
+    loadList();
     form.reset(); blocks = []; audioDuration = null; render();
     document.getElementById('ameta').textContent = '';
     form.date.value = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
