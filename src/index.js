@@ -17,6 +17,10 @@ export default {
         return await handleMedia(env, decodeURIComponent(path.slice(7)), request)
       }
       if (request.method === 'POST' && path === '/api/episodes') return await createEpisode(request, env)
+      if (request.method === 'GET' && path === '/api/episodes') return await listEpisodes(request, env)
+      if (request.method === 'DELETE' && path.startsWith('/api/episodes/')) {
+        return await deleteEpisode(request, env, path.slice('/api/episodes/'.length))
+      }
       if (request.method === 'POST' && path === '/api/comments') return await createComment(request, env)
     } catch (err) {
       console.error(err && err.stack || err)
@@ -303,6 +307,66 @@ async function createEpisode(request, env) {
   }
 
   return json({ ok: true, slug, id: episodeId })
+}
+
+/* ---------- oversigt og sletning ---------- */
+
+async function listEpisodes(request, env) {
+  const fail = authFailure(request, env)
+  if (fail) return json({ error: fail }, 401)
+
+  const { results } = await env.DB.prepare(
+    `SELECT e.id, e.slug, e.kind, e.title, e.published_at, e.date_end, e.place,
+            e.audio_key IS NOT NULL AS has_audio,
+            (SELECT COUNT(*) FROM blocks  b WHERE b.episode_id = e.id) AS block_count,
+            (SELECT COUNT(*) FROM comments c WHERE c.episode_id = e.id) AS comment_count
+     FROM episodes e ORDER BY e.published_at DESC, e.id DESC LIMIT 40`
+  ).all()
+  return json({ episodes: results })
+}
+
+// Sletter både databaserækkerne og de tilhørende filer i R2, så man aldrig
+// står med en halv oprydning: en post uden lyd, eller filer ingen henviser til.
+async function deleteEpisode(request, env, idRaw) {
+  const fail = authFailure(request, env)
+  if (fail) return json({ error: fail }, 401)
+
+  const id = parseInt(idRaw, 10)
+  if (!Number.isFinite(id)) return json({ error: 'Ugyldigt id' }, 400)
+
+  const ep = await env.DB.prepare(`SELECT id, title, audio_key FROM episodes WHERE id = ?`).bind(id).first()
+  if (!ep) return json({ error: 'Indslaget findes ikke' }, 404)
+
+  const { results: blocks } = await env.DB.prepare(
+    `SELECT media_key FROM blocks WHERE episode_id = ? AND media_key IS NOT NULL`
+  ).bind(id).all()
+  const { results: cmts } = await env.DB.prepare(
+    `SELECT audio_key FROM comments WHERE episode_id = ? AND audio_key IS NOT NULL`
+  ).bind(id).all()
+
+  const keys = [
+    ep.audio_key,
+    ...blocks.map(b => b.media_key),
+    ...cmts.map(c => c.audio_key)
+  ].filter(Boolean)
+
+  // Filerne først. Fejler databasen bagefter, står posten tilbage og kan
+  // slettes igen — det er til at opdage. Omvendt ville efterlade skjult skrald.
+  let filesDeleted = 0
+  if (keys.length) {
+    try {
+      await env.MEDIA.delete(keys)
+      filesDeleted = keys.length
+    } catch (err) {
+      console.error('R2 delete fejlede', err)
+    }
+  }
+
+  await env.DB.prepare(`DELETE FROM blocks   WHERE episode_id = ?`).bind(id).run()
+  await env.DB.prepare(`DELETE FROM comments WHERE episode_id = ?`).bind(id).run()
+  await env.DB.prepare(`DELETE FROM episodes WHERE id = ?`).bind(id).run()
+
+  return json({ ok: true, title: ep.title, filesDeleted })
 }
 
 /* ---------- kommentarer ---------- */
