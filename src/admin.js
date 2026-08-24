@@ -63,6 +63,12 @@ button.wide{width:100%;padding:.7rem;font-size:.85rem}
 .meta.warn{color:var(--hot)}
 .gate{max-width:22rem}
 .hint{font-size:.72rem;color:var(--faint);margin:.4rem 0 0}
+#editbar{display:flex;align-items:center;gap:.6rem;background:#FFFCE0;border:2px solid var(--ink);
+  padding:.5rem .7rem;margin:0 0 1rem;font-size:.75rem;
+  border-radius:255px 14px 225px 15px / 15px 225px 15px 255px}
+#editbar span{flex:1}
+#editbar button{padding:.25rem .55rem;font-size:.68rem}
+#audiohint{font-size:.72rem;color:var(--faint);margin:.3rem 0 0}
 .eprow{display:flex;align-items:center;gap:.6rem;border-bottom:1px solid var(--ink);padding:.5rem 0}
 .eprow:last-of-type{border-bottom:0}
 .epmeta{flex:1;min-width:0;display:flex;flex-direction:column;gap:.1rem}
@@ -83,8 +89,12 @@ button.wide{width:100%;padding:.7rem;font-size:.85rem}
 </div>
 
 <form id="pub" hidden>
-  <h1>Nyt indslag</h1>
-  <p class="sub">Byg det af blokke. Rækkefølgen er den, du ser her.</p>
+  <h1 id="formtitle">Nyt indslag</h1>
+  <p class="sub" id="formsub">Byg det af blokke. Rækkefølgen er den, du ser her.</p>
+  <div id="editbar" hidden>
+    <span>Du redigerer et eksisterende indslag.</span>
+    <button type="button" class="ghost" id="canceledit">Fortryd</button>
+  </div>
 
   <fieldset>
     <legend>Hvad</legend>
@@ -110,6 +120,7 @@ button.wide{width:100%;padding:.7rem;font-size:.85rem}
     <legend>Lyd</legend>
     <label><span>Lydfil</span><input type="file" id="audio" accept="audio/*"></label>
     <div class="meta" id="ameta"></div>
+    <p id="audiohint" hidden>Lad feltet stå tomt for at beholde den nuværende lyd.</p>
   </fieldset>
 
   <fieldset>
@@ -236,7 +247,7 @@ var LABELS = { text:'Tekst', note:'Note', heading:'Overskrift', quote:'Citat', i
 
 document.querySelectorAll('[data-add]').forEach(function(b){
   b.addEventListener('click', function(){
-    blocks.push({ type: b.dataset.add, content:'', caption:'', side:'', file:null, width:null, height:null });
+    blocks.push({ type: b.dataset.add, content:'', caption:'', side:'', file:null, media_key:null, width:null, height:null });
     render();
   });
 });
@@ -269,9 +280,10 @@ function render(){
     el.appendChild(top);
 
     if (b.type === 'image') {
-      if (b.file) {
+      if (b.file || b.media_key) {
         var th = document.createElement('img');
-        th.className = 'thumb'; th.src = URL.createObjectURL(b.file);
+        th.className = 'thumb';
+        th.src = b.file ? URL.createObjectURL(b.file) : '/media/' + b.media_key;
         el.appendChild(th);
       }
       var fin = document.createElement('input');
@@ -281,6 +293,7 @@ function render(){
         try {
           var out = await shrink(this.files[0], 1600);
           b.file = out.blob; b.width = out.width; b.height = out.height;
+          b.media_key = null;   // nyt billede erstatter det gamle
           render();
         } catch (err) { alert(err.message); }
       });
@@ -428,6 +441,11 @@ async function loadList(){
       sub.textContent = bits.join(' · ');
       meta.appendChild(t); meta.appendChild(sub);
 
+      var edit = document.createElement('button');
+      edit.type = 'button'; edit.className = 'ghost'; edit.textContent = 'Rediger';
+      edit.addEventListener('click', function(){ startEdit(ep.id); });
+      row.appendChild(edit);
+
       var btn = document.createElement('button');
       btn.type = 'button'; btn.className = 'ghost'; btn.textContent = 'Slet';
       var armed = false, timer = null;
@@ -463,6 +481,71 @@ async function loadList(){
   }
 }
 
+/* ---- redigering ---- */
+var editingId = null;
+
+function setMode(id){
+  editingId = id;
+  document.getElementById('formtitle').textContent = id ? 'Rediger indslag' : 'Nyt indslag';
+  document.getElementById('formsub').textContent = id
+    ? 'Ændringerne erstatter det nuværende indhold. Adressen forbliver den samme.'
+    : 'Byg det af blokke. Rækkefølgen er den, du ser her.';
+  document.getElementById('go').textContent = id ? 'Gem ændringer' : 'Udgiv';
+  document.getElementById('editbar').hidden = !id;
+  document.getElementById('audiohint').hidden = !id;
+}
+
+function resetForm(){
+  form.reset(); blocks = []; audioDuration = null; render();
+  document.getElementById('ameta').textContent = '';
+  document.getElementById('audio').value = '';
+  form.date.value = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  setMode(null);
+}
+
+document.getElementById('canceledit').addEventListener('click', function(){
+  resetForm(); statusEl.className = ''; statusEl.textContent = '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
+async function startEdit(id){
+  statusEl.className = ''; statusEl.textContent = 'henter…';
+  try {
+    var res = await fetch('/api/episodes/' + id, { headers: { 'authorization': 'Bearer ' + token() } });
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Kunne ikke hente indslaget');
+    var ep = data.episode;
+
+    form.title.value = ep.title || '';
+    form.place.value = ep.place || '';
+    form.day_number.value = ep.day_number || '';
+    form.date.value = (ep.published_at || '').slice(0,10);
+    form.date_end.value = (ep.date_end || '').slice(0,10);
+    document.getElementById('kind').value = ep.kind === 'note' ? 'note' : 'episode';
+    document.getElementById('audiofs').style.display = ep.kind === 'note' ? 'none' : '';
+    audioDuration = ep.duration || null;
+    document.getElementById('audio').value = '';
+    document.getElementById('ameta').className = 'meta';
+    document.getElementById('ameta').textContent = ep.audio_key
+      ? 'Nuværende lyd beholdes, medmindre du vælger en ny fil.'
+      : 'Ingen lyd på dette indslag.';
+
+    blocks = data.blocks.map(function(b){
+      return {
+        type: b.type, content: b.content || '', caption: b.caption || '',
+        side: b.offset_side || '', file: null,
+        media_key: b.media_key || null, width: b.width, height: b.height
+      };
+    });
+    render();
+    setMode(id);
+    statusEl.textContent = '';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } catch (err) {
+    statusEl.className = 'err'; statusEl.textContent = err.message;
+  }
+}
+
 /* ---- send ---- */
 form.addEventListener('submit', async function(e){
   e.preventDefault();
@@ -470,7 +553,7 @@ form.addEventListener('submit', async function(e){
   var kind = document.getElementById('kind').value;
   var af = document.getElementById('audio').files[0];
 
-  if (kind === 'episode' && !af) {
+  if (kind === 'episode' && !af && !editingId) {
     statusEl.className = 'err';
     statusEl.textContent = 'Vælg en lydfil, eller skift type til "Kort note uden lyd".';
     return;
@@ -488,10 +571,13 @@ form.addEventListener('submit', async function(e){
   var spec = [], fileIndex = 0;
   blocks.forEach(function(b){
     if (b.type === 'image') {
-      if (!b.file) return;
-      fd.append('blockfile', b.file, 'billede-' + (fileIndex+1) + '.jpg');
-      spec.push({ type:'image', caption:b.caption, side:b.side, fileIndex:fileIndex, width:b.width, height:b.height });
-      fileIndex++;
+      if (b.file) {
+        fd.append('blockfile', b.file, 'billede-' + (fileIndex+1) + '.jpg');
+        spec.push({ type:'image', caption:b.caption, side:b.side, fileIndex:fileIndex, width:b.width, height:b.height });
+        fileIndex++;
+      } else if (b.media_key) {
+        spec.push({ type:'image', caption:b.caption, side:b.side, media_key:b.media_key, width:b.width, height:b.height });
+      }
     } else if (String(b.content||'').trim()) {
       spec.push({ type:b.type, content:b.content, side:b.side });
     }
@@ -499,17 +585,17 @@ form.addEventListener('submit', async function(e){
   fd.append('blocks', JSON.stringify(spec));
 
   try {
-    var res = await fetch('/api/episodes', {
-      method:'POST', headers:{ 'authorization':'Bearer ' + token() }, body: fd
+    var res = await fetch(editingId ? '/api/episodes/' + editingId : '/api/episodes', {
+      method: editingId ? 'PUT' : 'POST',
+      headers:{ 'authorization':'Bearer ' + token() }, body: fd
     });
     var data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Upload mislykkedes');
     statusEl.className = 'ok';
-    statusEl.innerHTML = 'Udgivet. <a href="/dag/' + data.slug + '">Se det</a>';
+    statusEl.innerHTML = (data.edited ? 'Gemt. ' : 'Udgivet. ') +
+      '<a href="/dag/' + data.slug + '">Se det</a>';
     loadList();
-    form.reset(); blocks = []; audioDuration = null; render();
-    document.getElementById('ameta').textContent = '';
-    form.date.value = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    resetForm();
   } catch (err) {
     statusEl.className = 'err'; statusEl.textContent = err.message;
   } finally { btn.disabled = false; }
