@@ -1,0 +1,27 @@
+name = "audioblog"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+# binding = "DB" må IKKE ændres — det er navnet koden bruger (env.DB).
+# database_name skal matche din D1-database i Cloudflare.
+# database_id kopieres fra databasens Overview-fane.
+[[d1_databases]]
+binding = "DB"
+database_name = "audioblog"
+database_id = "c5b2ab56-68e1-4262-9d97-48964a38f273"
+
+# binding = "MEDIA" må heller ikke ændres (env.MEDIA).
+# bucket_name skal matche den R2-bucket, du opretter.
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "audioblog"
+
+[vars]
+SITE_TITLE = "Mads audioblog"
+SITE_TAGLINE = "En daglig audioblog"
+SITE_AUTHOR = "Mads"
+SITE_EMAIL = "mads3010@icloud.com.com"
+SITE_LANG = "da"
+
+# ADMIN_TOKEN sættes som Secret i Cloudflares kontrolpanel
+# under Settings → Variables and Secrets. Aldrig her i filen.
