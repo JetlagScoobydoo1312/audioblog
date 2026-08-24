@@ -45,10 +45,10 @@ async function handleIndex(env) {
 
   const rows = []
   for (const ep of eps) {
-    const { results: photos } = await env.DB.prepare(
-      `SELECT * FROM photos WHERE episode_id = ? ORDER BY sort_order, id LIMIT 4`
+    const { results: blocks } = await env.DB.prepare(
+      `SELECT * FROM blocks WHERE episode_id = ? ORDER BY position, id`
     ).bind(ep.id).all()
-    rows.push({ ep, photos })
+    rows.push({ ep, blocks })
   }
   return html(indexPage(env, rows))
 }
@@ -57,15 +57,15 @@ async function handleEpisode(env, slug, origin) {
   const ep = await env.DB.prepare(`SELECT * FROM episodes WHERE slug = ?`).bind(slug).first()
   if (!ep) return html(notFoundPage(env), 404)
 
-  const { results: photos } = await env.DB.prepare(
-    `SELECT * FROM photos WHERE episode_id = ? ORDER BY sort_order, id`
+  const { results: blocks } = await env.DB.prepare(
+    `SELECT * FROM blocks WHERE episode_id = ? ORDER BY position, id`
   ).bind(ep.id).all()
 
   const { results: comments } = await env.DB.prepare(
     `SELECT * FROM comments WHERE episode_id = ? AND hidden = 0 ORDER BY created_at ASC, id ASC`
   ).bind(ep.id).all()
 
-  return html(episodePage(env, ep, photos, comments, origin))
+  return html(episodePage(env, ep, blocks, comments, origin))
 }
 
 /* ---------- media fra R2, med Range så lyd kan spoles ---------- */
@@ -201,13 +201,27 @@ async function uniqueSlug(env, base) {
   return `${base}-${Date.now()}`
 }
 
-function extFor(type, fallback) {
-  const map = {
-    'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a',
-    'audio/aac': 'm4a', 'audio/wav': 'wav', 'audio/ogg': 'ogg', 'audio/webm': 'webm',
-    'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp'
-  }
-  return map[type] || fallback
+// Browsere er uenige om hvad de kalder de samme filtyper. WAV alene har
+// mindst fire stavemåder, og rammer man ikke en af dem, får filen forkert
+// endelse og kan afvises af afspillere.
+const EXTENSIONS = {
+  'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/x-mpeg': 'mp3', 'audio/mpeg3': 'mp3',
+  'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/aac': 'm4a', 'audio/aacp': 'm4a',
+  'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav', 'audio/vnd.wave': 'wav',
+  'audio/x-pn-wav': 'wav',
+  'audio/flac': 'flac', 'audio/x-flac': 'flac',
+  'audio/ogg': 'ogg', 'audio/vorbis': 'ogg', 'audio/opus': 'opus',
+  'audio/webm': 'webm', 'video/webm': 'webm',
+  'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/png': 'png',
+  'image/webp': 'webp', 'image/gif': 'gif', 'image/heic': 'heic'
+}
+
+function extFor(type, fallback, filename) {
+  const hit = EXTENSIONS[String(type || '').toLowerCase().split(';')[0].trim()]
+  if (hit) return hit
+  // Sidste udvej: læs endelsen af selve filnavnet
+  const m = String(filename || '').match(/\.([a-z0-9]{2,5})$/i)
+  return m ? m[1].toLowerCase() : fallback
 }
 
 async function createEpisode(request, env) {
@@ -218,18 +232,19 @@ async function createEpisode(request, env) {
   const title = String(form.get('title') || '').trim()
   if (!title) return json({ error: 'Titel mangler' }, 400)
 
-  const dateStr = String(form.get('date') || '').trim()
-  const publishedAt = /^\d{4}-\d{2}-\d{2}$/.test(dateStr)
-    ? new Date(`${dateStr}T12:00:00Z`).toISOString()
-    : new Date().toISOString()
+  const isoDay = v => {
+    const t = String(v || '').trim()
+    return /^\d{4}-\d{2}-\d{2}$/.test(t) ? new Date(`${t}T12:00:00Z`).toISOString() : null
+  }
+  const publishedAt = isoDay(form.get('date')) || new Date().toISOString()
+  const dateEnd = isoDay(form.get('date_end'))
 
+  const kind = form.get('kind') === 'note' ? 'note' : 'episode'
   const dayNumber = parseInt(form.get('day_number'), 10)
   const place = String(form.get('place') || '').trim()
-  const body = String(form.get('body') || '').trim()
   const duration = parseInt(form.get('duration'), 10)
 
-  const base = Number.isFinite(dayNumber) ? `dag-${dayNumber}-${slugify(title)}` : slugify(title)
-  const slug = await uniqueSlug(env, base)
+  const slug = await uniqueSlug(env, slugify(title))
 
   // Lyd
   let audioKey = null, audioType = null, audioBytes = null
@@ -237,42 +252,53 @@ async function createEpisode(request, env) {
   if (audio && typeof audio === 'object' && audio.size > 0) {
     audioType = audio.type || 'audio/mpeg'
     audioBytes = audio.size
-    audioKey = `audio/${slug}-${crypto.randomUUID().slice(0, 8)}.${extFor(audioType, 'mp3')}`
-    await env.MEDIA.put(audioKey, audio.stream(), {
-      httpMetadata: { contentType: audioType }
-    })
+    audioKey = `audio/${slug}-${crypto.randomUUID().slice(0, 8)}.${extFor(audioType, 'mp3', audio.name)}`
+    await env.MEDIA.put(audioKey, audio.stream(), { httpMetadata: { contentType: audioType } })
   }
 
   const now = new Date().toISOString()
   const res = await env.DB.prepare(
-    `INSERT INTO episodes (slug, day_number, title, place, body, audio_key, audio_type,
-       audio_bytes, duration, published_at, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+    `INSERT INTO episodes (slug, kind, day_number, title, place, body, audio_key, audio_type,
+       audio_bytes, duration, published_at, date_end, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).bind(
-    slug, Number.isFinite(dayNumber) ? dayNumber : null, title, place || null, body,
+    slug, kind, Number.isFinite(dayNumber) ? dayNumber : null, title, place || null, '',
     audioKey, audioType, audioBytes, Number.isFinite(duration) ? duration : null,
-    publishedAt, now
+    publishedAt, dateEnd, now
   ).run()
 
   const episodeId = res.meta.last_row_id
 
-  // Billeder (allerede skaleret i browseren)
-  const files = form.getAll('photo')
-  const captions = form.getAll('caption')
-  const dims = form.getAll('dims')
-  for (let i = 0; i < files.length; i++) {
-    const f = files[i]
-    if (!f || typeof f !== 'object' || !f.size) continue
-    const type = f.type || 'image/jpeg'
-    const key = `photos/${slug}-${i + 1}-${crypto.randomUUID().slice(0, 8)}.${extFor(type, 'jpg')}`
-    await env.MEDIA.put(key, f.stream(), { httpMetadata: { contentType: type } })
-    const [w, h] = String(dims[i] || '').split('x').map(n => parseInt(n, 10))
+  // Blokke: en ordnet liste af tekst, noter, overskrifter, citater og billeder.
+  // Filerne kommer separat og henvises til med filIndex.
+  let spec = []
+  try { spec = JSON.parse(String(form.get('blocks') || '[]')) } catch (e) { spec = [] }
+  const blockFiles = form.getAll('blockfile')
+
+  for (let i = 0; i < spec.length; i++) {
+    const b = spec[i] || {}
+    const type = ['text', 'note', 'heading', 'quote', 'image'].includes(b.type) ? b.type : 'text'
+    let mediaKey = null, w = null, h = null
+
+    if (type === 'image') {
+      const f = blockFiles[b.fileIndex]
+      if (!f || typeof f !== 'object' || !f.size) continue
+      const ftype = f.type || 'image/jpeg'
+      mediaKey = `photos/${slug}-${i + 1}-${crypto.randomUUID().slice(0, 8)}.${extFor(ftype, 'jpg', f.name)}`
+      await env.MEDIA.put(mediaKey, f.stream(), { httpMetadata: { contentType: ftype } })
+      w = Number.isFinite(b.width) ? b.width : null
+      h = Number.isFinite(b.height) ? b.height : null
+    } else if (!String(b.content || '').trim()) {
+      continue
+    }
+
     await env.DB.prepare(
-      `INSERT INTO photos (episode_id, media_key, caption, width, height, sort_order)
-       VALUES (?,?,?,?,?,?)`
+      `INSERT INTO blocks (episode_id, position, type, content, media_key, caption, width, height, offset_side)
+       VALUES (?,?,?,?,?,?,?,?,?)`
     ).bind(
-      episodeId, key, String(captions[i] || '').trim() || null,
-      Number.isFinite(w) ? w : null, Number.isFinite(h) ? h : null, i
+      episodeId, i, type, String(b.content || '').trim() || null, mediaKey,
+      String(b.caption || '').trim() || null, w, h,
+      ['left', 'right', 'wide'].includes(b.side) ? b.side : null
     ).run()
   }
 
