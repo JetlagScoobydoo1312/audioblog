@@ -76,7 +76,58 @@ body {
   font-size: 19px;
   line-height: 1.5;
 }
-.wrap { max-width: 40rem; margin: 0 auto; padding: 2rem 1.25rem 7rem; }
+.wrap { max-width: 40rem; margin: 0 auto; padding: 2rem 1.25rem 7rem; position: relative; }
+
+/* ---------- stående elementer i marginen ---------- */
+.standing { display: flex; flex-direction: column; gap: 1rem; margin: 0 0 2.5rem; }
+.card {
+  border: 1.5px solid var(--ink); padding: .75rem .85rem;
+  font-family: var(--type); font-size: .78rem; line-height: 1.45; background: var(--paper);
+}
+.card h4 {
+  font-family: var(--type); font-size: .64rem; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--faint); margin: 0 0 .45rem; font-weight: 400;
+}
+.card p { margin: 0 0 .5rem; }
+.card p:last-child { margin: 0; }
+.card .when { color: var(--faint); font-size: .68rem; }
+.card.notepad { background: #FFFDEB; white-space: pre-wrap; }
+.card.portrait img {
+  width: 100%; height: auto; display: block;
+  border: 1.5px solid var(--ink); margin-bottom: .5rem; filter: grayscale(1) contrast(1.08);
+}
+.card.portrait b { font-size: .85rem; }
+@media (min-width: 74rem) {
+  .standing { position: absolute; top: 12rem; width: 14rem; margin: 0; }
+  .standing.left  { left: -16.5rem; }
+  .standing.right { right: -16.5rem; }
+  .card.notepad { transform: rotate(-.8deg); }
+  .card.portrait { transform: rotate(.6deg); }
+}
+
+/* nuværende lokation i hovedet */
+.here { font-family: var(--type); font-size: .78rem; margin: .35rem 0 0; }
+.here .dot {
+  display: inline-block; width: .5rem; height: .5rem; background: var(--hot);
+  border-radius: 50%; margin-right: .35rem; vertical-align: .02em;
+  animation: pulse 2.4s ease-in-out infinite; cursor: pointer;
+}
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+@media (prefers-reduced-motion: reduce) { .here .dot { animation: none } }
+.here .days { color: var(--faint); }
+
+/* påskeæg: typografisk kaos */
+@keyframes wobble {
+  0%,100% { font-variation-settings: "wdth" 100, "opsz" 96 }
+  25%     { font-variation-settings: "wdth" 75,  "opsz" 12 }
+  50%     { font-variation-settings: "wdth" 100, "opsz" 40 }
+  75%     { font-variation-settings: "wdth" 80,  "opsz" 96 }
+}
+body.chaos .masthead h1, body.chaos article h2, body.chaos .blk-heading {
+  animation: wobble 1.1s ease-in-out 4;
+}
+@media (prefers-reduced-motion: reduce) { body.chaos .masthead h1 { animation: none } }
+.squiggle { cursor: crosshair; }
 
 a { color: var(--link); }
 a:visited { color: var(--visited); }
@@ -260,6 +311,26 @@ form.cform button:disabled { opacity: .4; cursor: default; }
 
 :focus-visible { outline: 2px solid var(--hot); outline-offset: 2px; }
 .empty { font-family: var(--type); font-size: .85rem; padding: 2rem 0; }
+.applist { display: flex; flex-direction: column; gap: .5rem; margin: .8rem 0 2rem; }
+.appbtn {
+  display: block; border: 1.5px solid var(--ink); padding: .7rem .9rem;
+  font-family: var(--type); font-size: .9rem; text-decoration: none;
+  color: var(--ink); background: var(--paper);
+}
+.appbtn:hover { background: var(--hot); color: var(--paper); }
+.appbtn::after { content: " →"; float: right; }
+.copybox { display: flex; gap: 0; margin: .8rem 0 1rem; }
+.copybox input {
+  flex: 1 1 auto; min-width: 0; font-family: var(--type); font-size: .78rem;
+  padding: .55rem .6rem; border: 1.5px solid var(--ink); border-right: 0;
+  border-radius: 0; background: var(--paper); color: var(--ink);
+}
+.copybox button {
+  flex: 0 0 auto; font-family: var(--type); font-size: .78rem; cursor: pointer;
+  background: var(--ink); color: var(--paper); border: 1.5px solid var(--ink);
+  padding: 0 .9rem; text-transform: uppercase; letter-spacing: .06em;
+}
+.copybox button:hover { background: var(--hot); border-color: var(--hot); }
 .backlink { font-family: var(--type); font-size: .78rem; margin-top: 2rem; }
 footer.site {
   margin-top: 4rem; padding-top: 1rem; border-top: 1.5px solid var(--ink);
@@ -268,23 +339,75 @@ footer.site {
 }
 `
 
-export function layout(env, { title, description, body, canonical, ogImage }) {
-  const site = env.SITE_TITLE || 'Audioblog'
-  const full = title ? `${title} — ${site}` : site
+function standingHtml(site) {
+  if (!site) return { left: '', right: '' }
+  const notepad = site.notepad?.value
+  const pName = site.portrait_name?.value
+  const pText = site.portrait_text?.value
+  const pImg = site.portrait_image?.media_key
+
+  const noteCard = notepad ? `<div class="card notepad">
+    <h4>Notesblok</h4>${prose(notepad)}
+  </div>` : ''
+
+  const portraitCard = (pName || pText || pImg) ? `<div class="card portrait">
+    <h4>Mødt undervejs</h4>
+    ${pImg ? `<img src="/media/${esc(pImg)}" alt="${esc(pName || 'Portræt')}" loading="lazy">` : ''}
+    ${pName ? `<p><b>${esc(pName)}</b></p>` : ''}
+    ${pText ? prose(pText) : ''}
+  </div>` : ''
+
+  return {
+    left: portraitCard ? `<div class="standing left">${portraitCard}</div>` : '',
+    right: noteCard ? `<div class="standing right">${noteCard}</div>` : ''
+  }
+}
+
+function hereHtml(site) {
+  const where = site?.location?.value
+  if (!where) return ''
+  const start = site?.trip_start?.value
+  let days = ''
+  if (start) {
+    const d0 = new Date(start), d1 = new Date()
+    if (!isNaN(d0)) {
+      const n = Math.floor((d1 - d0) / 86400000) + 1
+      let label = null
+      if (n >= 1 && n < 2000) label = `dag ${n} af rejsen`
+      else if (n < 1 && n > -400) {
+        const left = 1 - n
+        label = left === 1 ? 'afrejse i morgen' : `${left} dage til afrejse`
+      }
+      if (label) days = `<span class="days" hidden data-days="${esc(label)}"></span>`
+    }
+  }
+  return `<p class="here"><span class="dot" role="button" tabindex="0" aria-label="Vis hvor længe rejsen har varet"></span>Lige nu: ${esc(where)}${days}</p>`
+}
+
+export function layout(env, { title, description, body, canonical, ogImage, site }) {
+  const siteName = env.SITE_TITLE || 'Audioblog'
+  const full = title ? `${title} — ${siteName}` : siteName
+  const standing = standingHtml(site)
   return `<!doctype html>
+<!--
+       .-.
+      (o o)    du kigger i kildekoden. respekt.
+      | O |    alt herinde er skrevet i hånden. ingen frameworks.
+      '~~~'    prøv konami-koden. og klik på bølgestregen.
+-->
 <html lang="${esc(env.SITE_LANG || 'da')}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(full)}</title>
 <meta name="description" content="${esc(description || env.SITE_TAGLINE || '')}">
-<meta property="og:title" content="${esc(title || site)}">
+<meta property="og:title" content="${esc(title || siteName)}">
 <meta property="og:description" content="${esc(description || env.SITE_TAGLINE || '')}">
 <meta property="og:type" content="website">
 <meta name="color-scheme" content="light">
 ${canonical ? `<link rel="canonical" href="${esc(canonical)}">` : ''}
 ${ogImage ? `<meta property="og:image" content="${esc(ogImage)}">` : ''}
-<link rel="alternate" type="application/rss+xml" title="${esc(site)}" href="/feed.xml">
+<link rel="alternate" type="application/rss+xml" title="${esc(siteName)}" href="/feed.xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..800&family=Courier+Prime:wght@400;700&display=swap">
@@ -293,10 +416,12 @@ ${ogImage ? `<meta property="og:image" content="${esc(ogImage)}">` : ''}
 <body>
 <div class="wrap">
   <header class="masthead">
-    <h1><a href="/">${esc(site)}</a></h1>
+    <h1><a href="/">${esc(siteName)}</a></h1>
     <p class="tagline">${esc(env.SITE_TAGLINE || '')}</p>
-    <p class="subscribe"><a href="/feed.xml">→ abonnér i din podcast-app</a></p>
+    ${hereHtml(site)}
+    <p class="subscribe"><a href="/abonner">→ følg med i din podcast-app</a></p>
   </header>
+  ${standing.left}${standing.right}
   ${SQUIGGLE}
   ${body}
   <footer class="site">
@@ -310,6 +435,53 @@ ${ogImage ? `<meta property="og:image" content="${esc(ogImage)}">` : ''}
 }
 
 const PAGE_JS = `
+/* --- påskeæg 1: fanetitlen kalder på dig, når du forlader siden --- */
+(function () {
+  var real = document.title;
+  document.addEventListener('visibilitychange', function () {
+    document.title = document.hidden ? 'kom tilbage \u2192' : real;
+  });
+})();
+
+/* --- påskeæg 2: klik på bølgen, og den tegner sig selv om --- */
+document.querySelectorAll('.squiggle').forEach(function (svg) {
+  svg.addEventListener('click', function () {
+    var path = svg.querySelector('path'), d = 'M0 7', y = 7;
+    for (var x = 22; x <= 600; x += 22) {
+      y = 2 + Math.random() * 8;
+      d += ' S ' + (x - 11) + ' ' + (2 + Math.random() * 8) + ', ' + x + ' ' + y.toFixed(1);
+    }
+    path.setAttribute('d', d);
+  });
+});
+
+/* --- påskeæg 3: konami-koden slipper typografien løs --- */
+(function () {
+  var seq = [38,38,40,40,37,39,37,39,66,65], i = 0;
+  document.addEventListener('keydown', function (e) {
+    i = (e.keyCode === seq[i]) ? i + 1 : 0;
+    if (i === seq.length) {
+      i = 0;
+      document.body.classList.add('chaos');
+      setTimeout(function () { document.body.classList.remove('chaos'); }, 5000);
+    }
+  });
+})();
+
+/* --- påskeæg 4: prikken ved lokationen fortæller hvilken dag det er --- */
+document.querySelectorAll('.here .dot').forEach(function (dot) {
+  var span = dot.parentNode.querySelector('.days');
+  if (!span) return;
+  function toggle() {
+    if (span.hidden) { span.textContent = ' \u2014 ' + span.dataset.days; span.hidden = false; }
+    else { span.hidden = true; }
+  }
+  dot.addEventListener('click', toggle);
+  dot.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
+  });
+});
+
 document.querySelectorAll('.player').forEach(function (p) {
   var a = p.querySelector('audio'), btn = p.querySelector('.pbtn'),
       bar = p.querySelector('.scrub'), cur = p.querySelector('.t-cur'),
@@ -447,20 +619,20 @@ function articleHtml(ep, blocks, comments, { full }) {
 </article>`
 }
 
-export function indexPage(env, rows) {
+export function indexPage(env, rows, site) {
   if (!rows.length) {
     return layout(env, {
-      description: env.SITE_TAGLINE,
+      description: env.SITE_TAGLINE, site,
       body: `<p class="empty">Ikke noget her endnu. Kom tilbage.</p>`
     })
   }
   const body = rows
     .map(r => articleHtml(r.ep, r.blocks, [], { full: false }))
     .join(`<div class="sep">${SQUIGGLE}</div>`)
-  return layout(env, { description: env.SITE_TAGLINE, body })
+  return layout(env, { description: env.SITE_TAGLINE, body, site })
 }
 
-export function episodePage(env, ep, blocks, comments, origin) {
+export function episodePage(env, ep, blocks, comments, origin, site) {
   const firstText = blocks.find(b => b.type === 'text' || b.type === 'note')
   const desc = String(firstText?.content || ep.body || '').replace(/\s+/g, ' ').slice(0, 180)
   const firstImg = blocks.find(b => b.type === 'image' && b.media_key)
@@ -470,6 +642,62 @@ export function episodePage(env, ep, blocks, comments, origin) {
     title: ep.title, description: desc,
     canonical: `${origin}/dag/${ep.slug}`,
     ogImage: firstImg ? `${origin}/media/${firstImg.media_key}` : undefined,
+    body, site
+  })
+}
+
+/**
+ * Abonnér-siden. Et rå link til feed.xml er ubrugeligt for almindelige
+ * mennesker — Safari spørger bare om man vil lede i App Store. Her får man
+ * i stedet ét tryk til sin app, og adressen at kopiere hvis den ikke er med.
+ */
+export function subscribePage(env, origin) {
+  const feed = `${origin}/feed.xml`
+  const bare = feed.replace(/^https?:\/\//, '')
+  const body = `<article>
+  <h2>Følg med</h2>
+  <p>Du kan bare besøge <a href="/">forsiden</a>, når du har lyst. Men vil du
+  have hvert nyt indslag automatisk — som en podcast, med afspilning offline —
+  så tilføj den til din podcast-app.</p>
+
+  <div class="applist">
+    <a class="appbtn" href="podcast://${esc(bare)}">Åbn i Apple Podcasts</a>
+  </div>
+  <p class="cap">Virker på iPhone, iPad og Mac, hvis Podcasts-appen er installeret.</p>
+
+  <h3 class="blk-heading">Andre apps</h3>
+  <p>Kopiér adressen her og find "Tilføj via URL" eller "Add by URL" i appens
+  indstillinger. Det virker i Overcast, Pocket Casts, Castro, AntennaPod og
+  stort set alt andet.</p>
+  <div class="copybox">
+    <input type="text" id="feedurl" readonly value="${esc(feed)}" aria-label="Feedadresse">
+    <button type="button" id="copybtn">Kopiér</button>
+  </div>
+
+  <aside class="blk blk-note" style="float:none;width:auto;margin:2rem 0;transform:none">
+    <p><b>Spotify kan ikke endnu.</b> Spotify lader ikke lyttere tilføje en
+    vilkårlig adresse — en podcast skal først indleveres til deres katalog.
+    Indtil videre: brug Apple Podcasts, eller besøg bare forsiden.</p>
+  </aside>
+
+  <p class="backlink"><a href="/">← tilbage</a></p>
+</article>
+<script>
+document.getElementById('copybtn').addEventListener('click', async function () {
+  var inp = document.getElementById('feedurl'), btn = this;
+  try {
+    await navigator.clipboard.writeText(inp.value);
+  } catch (e) {
+    inp.select(); inp.setSelectionRange(0, 99999);
+    try { document.execCommand('copy'); } catch (e2) {}
+  }
+  btn.textContent = 'Kopieret';
+  setTimeout(function () { btn.textContent = 'Kopiér'; }, 2000);
+});
+</script>`
+  return layout(env, {
+    title: 'Følg med',
+    description: 'Sådan får du nye indslag automatisk i din podcast-app.',
     body
   })
 }
