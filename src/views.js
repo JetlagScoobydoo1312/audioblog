@@ -80,29 +80,61 @@ body {
 
 /* ---------- stående elementer i marginen ---------- */
 .standing { display: flex; flex-direction: column; gap: 1rem; margin: 0 0 2.5rem; }
+/* Kortene skal se tegnet ud, ikke sat. Uens hjørneradier giver en
+   tuschstreg-agtig kant, og ::after lægger en streg mere lidt ved siden af,
+   som om nogen har tegnet kassen to gange. */
 .card {
-  border: 1.5px solid var(--ink); padding: .75rem .85rem;
-  font-family: var(--type); font-size: .78rem; line-height: 1.45; background: var(--paper);
+  position: relative;
+  padding: 1rem .9rem .85rem;
+  font-family: var(--type); font-size: .78rem; line-height: 1.5;
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  border-radius: 255px 14px 225px 15px / 15px 225px 15px 255px;
+}
+.card::after {
+  content: ""; position: absolute; inset: -5px -4px -3px -5px;
+  border: 1.5px solid var(--ink); opacity: .4; pointer-events: none;
+  border-radius: 14px 225px 15px 255px / 225px 15px 255px 15px;
+}
+/* tapestrimmel */
+.card::before {
+  content: ""; position: absolute; top: -.65rem; left: 1.4rem;
+  width: 3.2rem; height: 1.15rem;
+  background: rgba(0,0,0,.055);
+  border-left: 1px dashed rgba(0,0,0,.28);
+  border-right: 1px dashed rgba(0,0,0,.28);
+  transform: rotate(-3.5deg);
 }
 .card h4 {
   font-family: var(--type); font-size: .64rem; letter-spacing: .16em;
-  text-transform: uppercase; color: var(--faint); margin: 0 0 .45rem; font-weight: 400;
+  text-transform: uppercase; color: var(--ink); margin: 0 0 .5rem; font-weight: 700;
 }
-.card p { margin: 0 0 .5rem; }
+.card h4 svg { display: block; width: 100%; height: 6px; margin-top: .15rem; opacity: .55; }
+.card p { margin: 0 0 .55rem; }
 .card p:last-child { margin: 0; }
-.card .when { color: var(--faint); font-size: .68rem; }
-.card.notepad { background: #FFFDEB; white-space: pre-wrap; }
+.card.notepad { background: #FFFCE0; }
+.card.notepad::before { left: auto; right: 1.2rem; transform: rotate(4deg); }
 .card.portrait img {
   width: 100%; height: auto; display: block;
-  border: 1.5px solid var(--ink); margin-bottom: .5rem; filter: grayscale(1) contrast(1.08);
+  border: 2px solid var(--ink); margin: 0 0 .55rem;
+  filter: grayscale(1) contrast(1.1);
+  transform: rotate(-1.4deg);
+  border-radius: 12px 3px 10px 4px / 4px 10px 3px 12px;
 }
-.card.portrait b { font-size: .85rem; }
+.card.portrait b { font-size: .88rem; }
+.card .ny {
+  display: inline-block; background: var(--hot); color: var(--paper);
+  font-size: .58rem; letter-spacing: .14em; padding: 0 .3rem; margin-left: .35rem;
+  animation: blink 1.1s step-end infinite; vertical-align: .12em;
+}
+@keyframes blink { 0%, 60% { opacity: 1 } 61%, 100% { opacity: 0 } }
+@media (prefers-reduced-motion: reduce) { .card .ny { animation: none } }
 @media (min-width: 74rem) {
-  .standing { position: absolute; top: 12rem; width: 14rem; margin: 0; }
-  .standing.left  { left: -16.5rem; }
-  .standing.right { right: -16.5rem; }
-  .card.notepad { transform: rotate(-.8deg); }
-  .card.portrait { transform: rotate(.6deg); }
+  .standing { position: absolute; top: 12rem; width: 14.5rem; margin: 0; }
+  .standing.left  { left: -17rem; }
+  .standing.right { right: -17rem; }
+  .card.notepad  { transform: rotate(-1.6deg); }
+  .card.portrait { transform: rotate(1.1deg); }
 }
 
 /* nuværende lokation i hovedet */
@@ -339,6 +371,15 @@ footer.site {
 }
 `
 
+const UNDERSCRIBBLE = `<svg viewBox="0 0 200 6" preserveAspectRatio="none" aria-hidden="true"><path d="M1 4 C 20 1, 38 5, 57 3 S 95 1, 114 4 S 152 5, 171 2 S 195 4, 199 3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>`
+
+/** Blinkende NY! hvis elementet er ændret inden for tre døgn. */
+function freshBadge(iso) {
+  if (!iso) return ''
+  const age = Date.now() - new Date(iso).getTime()
+  return (age >= 0 && age < 3 * 86400000) ? '<span class="ny">NY!</span>' : ''
+}
+
 function standingHtml(site) {
   if (!site) return { left: '', right: '' }
   const notepad = site.notepad?.value
@@ -347,11 +388,11 @@ function standingHtml(site) {
   const pImg = site.portrait_image?.media_key
 
   const noteCard = notepad ? `<div class="card notepad">
-    <h4>Notesblok</h4>${prose(notepad)}
+    <h4>Notesblok${freshBadge(site.notepad?.updated_at)}${UNDERSCRIBBLE}</h4>${prose(notepad)}
   </div>` : ''
 
   const portraitCard = (pName || pText || pImg) ? `<div class="card portrait">
-    <h4>Mødt undervejs</h4>
+    <h4>Mødt undervejs${freshBadge(site.portrait_name?.updated_at)}${UNDERSCRIBBLE}</h4>
     ${pImg ? `<img src="/media/${esc(pImg)}" alt="${esc(pName || 'Portræt')}" loading="lazy">` : ''}
     ${pName ? `<p><b>${esc(pName)}</b></p>` : ''}
     ${pText ? prose(pText) : ''}
@@ -581,6 +622,8 @@ function commentsHtml(ep, comments) {
   return `<section class="comments">
   <h3>${comments.length} ${comments.length === 1 ? 'kommentar' : 'kommentarer'}</h3>
   ${list}
+  <details class="cwrap">
+  <summary>Skriv en kommentar</summary>
   <form class="cform" autocomplete="off">
     <input type="hidden" name="episode_id" value="${ep.id}">
     <div class="hp"><label>Lad feltet stå tomt<input type="text" name="website" tabindex="-1"></label></div>
@@ -589,6 +632,7 @@ function commentsHtml(ep, comments) {
     <button type="submit">Send</button>
     <p class="formnote"></p>
   </form>
+  </details>
 </section>`
 }
 
