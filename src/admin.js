@@ -55,7 +55,9 @@ button.wide{width:100%;padding:.7rem;font-size:.85rem}
 .blk .side{display:flex;gap:.4rem;align-items:center;margin-top:.4rem;font-size:.7rem;color:var(--faint)}
 .blk .side select{width:auto;padding:.2rem .3rem;font-size:.72rem}
 .blk img.thumb{width:100%;max-height:9rem;object-fit:contain;border:1.5px solid var(--ink);margin-bottom:.4rem;background:#f4f4f4}
-#status{margin-top:.9rem;font-size:.8rem;min-height:1.3em}
+#status,#sitestatus{margin-top:.9rem;font-size:.8rem;min-height:1.3em}
+#sitestatus.err{color:var(--hot)} #sitestatus.ok{color:#0A7A3D}
+#portraitnow img.thumb{max-height:7rem;width:auto}
 #status.err{color:var(--hot)} #status.ok{color:#0A7A3D}
 .meta{font-size:.72rem;color:var(--faint);margin-top:.3rem}
 .meta.warn{color:var(--hot)}
@@ -129,6 +131,20 @@ button.wide{width:100%;padding:.7rem;font-size:.85rem}
 
 <section id="manage" hidden>
   <fieldset>
+    <legend>Stående på siden</legend>
+    <label><span>Hvor er du lige nu</span><input type="text" id="s_location" maxlength="80" placeholder="Ischia, Italien"></label>
+    <label><span>Rejsen begyndte (til dag-tælleren)</span><input type="date" id="s_trip_start"></label>
+    <label><span>Notesblok i marginen</span><textarea id="s_notepad" placeholder="Noget der står, indtil du ændrer det."></textarea></label>
+    <label><span>Mødt undervejs — navn</span><input type="text" id="s_portrait_name" maxlength="80" placeholder="Roberta"></label>
+    <label><span>Mødt undervejs — om personen</span><textarea id="s_portrait_text" placeholder="Ejer B&amp;B'et i Materdei. Har boet i samme gade i 61 år."></textarea></label>
+    <label><span>Mødt undervejs — portræt</span><input type="file" id="s_portrait_image" accept="image/*"></label>
+    <div id="portraitnow"></div>
+    <button type="button" id="savesite" class="wide" style="margin-top:.6rem">Gem</button>
+    <div id="sitestatus"></div>
+    <p class="hint">Lad et felt stå tomt for at fjerne det fra siden. Portrættet erstattes, og det gamle billede slettes.</p>
+  </fieldset>
+
+  <fieldset>
     <legend>Udgivet</legend>
     <div id="eplist"><p class="hint">henter…</p></div>
     <p class="hint">Sletning fjerner både posten og de tilhørende lyd- og billedfiler. Kan ikke fortrydes.</p>
@@ -151,7 +167,7 @@ function token(){ try { return localStorage.getItem(KEY) || ''; } catch(e){ retu
 function show(){
   var on = !!token();
   gate.hidden = on; form.hidden = !on; manage.hidden = !on;
-  if (on) loadList();
+  if (on) { loadList(); loadSite(); }
 }
 show();
 
@@ -310,6 +326,64 @@ function render(){
   });
 }
 render();
+
+/* ---- stående elementer ---- */
+var SITE_FIELDS = ['location','trip_start','notepad','portrait_name','portrait_text'];
+var portraitBlob = null;
+
+async function loadSite(){
+  try {
+    var res = await fetch('/api/site', { headers: { 'authorization': 'Bearer ' + token() } });
+    var data = await res.json();
+    if (!res.ok) return;
+    SITE_FIELDS.forEach(function(k){
+      var el = document.getElementById('s_' + k);
+      if (!el) return;
+      var v = data.site[k] && data.site[k].value;
+      if (k === 'trip_start' && v) { el.value = String(v).slice(0,10); }
+      else if (v) { el.value = v; }
+    });
+    var img = data.site.portrait_image && data.site.portrait_image.media_key;
+    var box = document.getElementById('portraitnow');
+    box.innerHTML = img
+      ? '<img class="thumb" src="/media/' + img + '" alt="Nuværende portræt">'
+      : '';
+  } catch (e) { /* siden virker fint uden */ }
+}
+
+document.getElementById('s_portrait_image').addEventListener('change', async function(){
+  if (!this.files[0]) { portraitBlob = null; return; }
+  try {
+    var out = await shrink(this.files[0], 900);
+    portraitBlob = out.blob;
+    document.getElementById('portraitnow').innerHTML =
+      '<img class="thumb" src="' + URL.createObjectURL(out.blob) + '" alt="Nyt portræt">';
+  } catch (err) { alert(err.message); }
+});
+
+document.getElementById('savesite').addEventListener('click', async function(){
+  var btn = this, st = document.getElementById('sitestatus');
+  btn.disabled = true; st.className = ''; st.textContent = 'gemmer…';
+  var fd = new FormData();
+  SITE_FIELDS.forEach(function(k){
+    var el = document.getElementById('s_' + k);
+    if (el) fd.append(k, el.value);
+  });
+  if (portraitBlob) fd.append('portrait_image', portraitBlob, 'portraet.jpg');
+  try {
+    var res = await fetch('/api/site', {
+      method: 'POST', headers: { 'authorization': 'Bearer ' + token() }, body: fd
+    });
+    var d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'Kunne ikke gemme');
+    st.className = 'ok'; st.textContent = 'Gemt.';
+    portraitBlob = null;
+    document.getElementById('s_portrait_image').value = '';
+    setTimeout(function(){ st.textContent = ''; }, 2500);
+  } catch (err) {
+    st.className = 'err'; st.textContent = err.message;
+  } finally { btn.disabled = false; }
+});
 
 /* ---- oversigt og sletning ---- */
 var MONTHS = ['januar','februar','marts','april','maj','juni','juli','august','september','oktober','november','december'];
