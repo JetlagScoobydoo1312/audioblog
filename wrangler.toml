@@ -17,7 +17,7 @@ binding = "MEDIA"
 bucket_name = "audioblog"
 
 [vars]
-SITE_TITLE = "Mads´ audioblog"
+SITE_TITLE = "Mads' audioblog"
 SITE_TAGLINE = "En rejselyddagbog"
 SITE_AUTHOR = "Mads"
 SITE_EMAIL = "mads3010@icloud.com.com"
