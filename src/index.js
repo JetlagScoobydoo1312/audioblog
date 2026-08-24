@@ -1,4 +1,4 @@
-import { indexPage, episodePage, notFoundPage, esc } from './views.js'
+import { indexPage, episodePage, notFoundPage, subscribePage, esc } from './views.js'
 import { adminPage } from './admin.js'
 
 export default {
@@ -10,6 +10,9 @@ export default {
       if (request.method === 'GET' && path === '/') return await handleIndex(env)
       if (request.method === 'GET' && path === '/feed.xml') return await handleFeed(env, url.origin)
       if (request.method === 'GET' && path === '/udgiv') return html(adminPage(env), 200)
+      if (request.method === 'GET' && path === '/abonner') return html(subscribePage(env, url.origin))
+      if (request.method === 'GET' && path === '/api/site') return await getSite(request, env)
+      if (request.method === 'POST' && path === '/api/site') return await saveSite(request, env)
       if (request.method === 'GET' && path.startsWith('/dag/')) {
         return await handleEpisode(env, decodeURIComponent(path.slice(5)), url.origin)
       }
@@ -54,7 +57,7 @@ async function handleIndex(env) {
     ).bind(ep.id).all()
     rows.push({ ep, blocks })
   }
-  return html(indexPage(env, rows))
+  return html(indexPage(env, rows, await readSite(env)))
 }
 
 async function handleEpisode(env, slug, origin) {
@@ -69,7 +72,7 @@ async function handleEpisode(env, slug, origin) {
     `SELECT * FROM comments WHERE episode_id = ? AND hidden = 0 ORDER BY created_at ASC, id ASC`
   ).bind(ep.id).all()
 
-  return html(episodePage(env, ep, blocks, comments, origin))
+  return html(episodePage(env, ep, blocks, comments, origin, await readSite(env)))
 }
 
 /* ---------- media fra R2, med Range så lyd kan spoles ---------- */
@@ -307,6 +310,65 @@ async function createEpisode(request, env) {
   }
 
   return json({ ok: true, slug, id: episodeId })
+}
+
+/* ---------- stående elementer ---------- */
+
+const SITE_KEYS = ['location', 'notepad', 'portrait_name', 'portrait_text', 'trip_start']
+
+async function readSite(env) {
+  try {
+    const { results } = await env.DB.prepare(`SELECT * FROM site`).all()
+    const out = {}
+    for (const r of results) out[r.key] = { value: r.value, media_key: r.media_key, updated_at: r.updated_at }
+    return out
+  } catch (err) {
+    // Tabellen findes måske ikke endnu — siden skal virke alligevel
+    console.error('site-tabel utilgængelig', err)
+    return {}
+  }
+}
+
+async function getSite(request, env) {
+  const fail = authFailure(request, env)
+  if (fail) return json({ error: fail }, 401)
+  return json({ site: await readSite(env) })
+}
+
+async function saveSite(request, env) {
+  const fail = authFailure(request, env)
+  if (fail) return json({ error: fail }, 401)
+
+  const form = await request.formData()
+  const now = new Date().toISOString()
+
+  for (const key of SITE_KEYS) {
+    if (!form.has(key)) continue
+    const value = String(form.get(key) || '').trim()
+    await env.DB.prepare(
+      `INSERT INTO site (key, value, updated_at) VALUES (?,?,?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+    ).bind(key, value || null, now).run()
+  }
+
+  const img = form.get('portrait_image')
+  if (img && typeof img === 'object' && img.size > 0) {
+    const type = img.type || 'image/jpeg'
+    const key = `portraits/${crypto.randomUUID().slice(0, 12)}.${extFor(type, 'jpg', img.name)}`
+    await env.MEDIA.put(key, img.stream(), { httpMetadata: { contentType: type } })
+
+    const prev = await env.DB.prepare(`SELECT media_key FROM site WHERE key = 'portrait_image'`).first()
+    await env.DB.prepare(
+      `INSERT INTO site (key, media_key, updated_at) VALUES ('portrait_image',?,?)
+       ON CONFLICT(key) DO UPDATE SET media_key = excluded.media_key, updated_at = excluded.updated_at`
+    ).bind(key, now).run()
+    // Det gamle portræt er ikke længere i brug — lad det ikke ligge og fylde
+    if (prev && prev.media_key) {
+      try { await env.MEDIA.delete(prev.media_key) } catch (e) { console.error(e) }
+    }
+  }
+
+  return json({ ok: true, site: await readSite(env) })
 }
 
 /* ---------- oversigt og sletning ---------- */
