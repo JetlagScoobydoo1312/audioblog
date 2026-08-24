@@ -160,13 +160,27 @@ ${items}
 
 /* ---------- udgivelse ---------- */
 
-function authed(request, env) {
-  const given = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '')
-  const want = env.ADMIN_TOKEN || ''
-  if (!want || given.length !== want.length) return false
+// Returnerer null hvis alt er i orden, ellers en forklarende fejltekst.
+// De to tilfælde skal holdes adskilt: "serveren mangler en nøgle" og
+// "du skrev den forkerte" kræver vidt forskellige handlinger.
+function authFailure(request, env) {
+  const want = (env.ADMIN_TOKEN || '').trim()
+  if (!want) {
+    return 'Serveren har ingen ADMIN_TOKEN. Tilføj den under Settings → Variables and Secrets, og udgiv Worker\'en igen.'
+  }
+  const given = (request.headers.get('authorization') || '').replace(/^Bearer\s+/i, '').trim()
+  if (!given) {
+    return 'Ingen adgangsnøgle blev sendt. Tryk "Glem nøglen på denne enhed" og indtast den igen.'
+  }
+  if (given.length !== want.length) {
+    return `Forkert adgangsnøgle. Du sendte ${given.length} tegn, serveren forventer ${want.length}. Tryk "Glem nøglen på denne enhed" og indsæt den igen.`
+  }
   let diff = 0
   for (let i = 0; i < want.length; i++) diff |= given.charCodeAt(i) ^ want.charCodeAt(i)
-  return diff === 0
+  if (diff !== 0) {
+    return 'Forkert adgangsnøgle. Længden passer, men tegnene gør ikke. Tryk "Glem nøglen på denne enhed" og indsæt den igen.'
+  }
+  return null
 }
 
 function slugify(s) {
@@ -197,7 +211,8 @@ function extFor(type, fallback) {
 }
 
 async function createEpisode(request, env) {
-  if (!authed(request, env)) return json({ error: 'Forkert adgangsnøgle' }, 401)
+  const fail = authFailure(request, env)
+  if (fail) return json({ error: fail }, 401)
 
   const form = await request.formData()
   const title = String(form.get('title') || '').trim()
