@@ -21,6 +21,12 @@ export default {
       }
       if (request.method === 'POST' && path === '/api/episodes') return await createEpisode(request, env)
       if (request.method === 'GET' && path === '/api/episodes') return await listEpisodes(request, env)
+      if (request.method === 'GET' && path.startsWith('/api/episodes/')) {
+        return await readEpisode(request, env, path.slice('/api/episodes/'.length))
+      }
+      if (request.method === 'PUT' && path.startsWith('/api/episodes/')) {
+        return await createEpisode(request, env, path.slice('/api/episodes/'.length))
+      }
       if (request.method === 'DELETE' && path.startsWith('/api/episodes/')) {
         return await deleteEpisode(request, env, path.slice('/api/episodes/'.length))
       }
@@ -231,9 +237,22 @@ function extFor(type, fallback, filename) {
   return m ? m[1].toLowerCase() : fallback
 }
 
-async function createEpisode(request, env) {
+// Bruges både til nye indslag (POST) og til redigering (PUT med id).
+// Ved redigering erstattes alle blokke, men billeder der stadig er i brug
+// bevares — kun dem der er fjernet, slettes fra R2.
+async function createEpisode(request, env, editIdRaw) {
   const fail = authFailure(request, env)
   if (fail) return json({ error: fail }, 401)
+
+  const editing = editIdRaw != null
+  const editId = editing ? parseInt(editIdRaw, 10) : null
+  if (editing && !Number.isFinite(editId)) return json({ error: 'Ugyldigt id' }, 400)
+
+  let existing = null
+  if (editing) {
+    existing = await env.DB.prepare(`SELECT * FROM episodes WHERE id = ?`).bind(editId).first()
+    if (!existing) return json({ error: 'Indslaget findes ikke' }, 404)
+  }
 
   const form = await request.formData()
   const title = String(form.get('title') || '').trim()
@@ -243,58 +262,97 @@ async function createEpisode(request, env) {
     const t = String(v || '').trim()
     return /^\d{4}-\d{2}-\d{2}$/.test(t) ? new Date(`${t}T12:00:00Z`).toISOString() : null
   }
-  const publishedAt = isoDay(form.get('date')) || new Date().toISOString()
+  const publishedAt = isoDay(form.get('date')) || existing?.published_at || new Date().toISOString()
   const dateEnd = isoDay(form.get('date_end'))
-
   const kind = form.get('kind') === 'note' ? 'note' : 'episode'
   const dayNumber = parseInt(form.get('day_number'), 10)
   const place = String(form.get('place') || '').trim()
   const duration = parseInt(form.get('duration'), 10)
 
-  const slug = await uniqueSlug(env, slugify(title))
+  // Adressen skal ikke skifte, når man retter en tastefejl i titlen —
+  // så ville delte links og RSS-guid'er gå i stykker.
+  const slug = editing ? existing.slug : await uniqueSlug(env, slugify(title))
 
-  // Lyd
-  let audioKey = null, audioType = null, audioBytes = null
+  // Lyd: ny fil erstatter den gamle, ellers beholdes den
+  let audioKey = existing?.audio_key || null
+  let audioType = existing?.audio_type || null
+  let audioBytes = existing?.audio_bytes || null
+  let audioDuration = Number.isFinite(duration) ? duration : (existing?.duration ?? null)
+  let oldAudioToDelete = null
+
   const audio = form.get('audio')
   if (audio && typeof audio === 'object' && audio.size > 0) {
+    if (editing && existing.audio_key) oldAudioToDelete = existing.audio_key
     audioType = audio.type || 'audio/mpeg'
     audioBytes = audio.size
     audioKey = `audio/${slug}-${crypto.randomUUID().slice(0, 8)}.${extFor(audioType, 'mp3', audio.name)}`
     await env.MEDIA.put(audioKey, audio.stream(), { httpMetadata: { contentType: audioType } })
   }
+  if (kind === 'note' && !audio) {
+    // Skifter man en episode til note, ryger lyden ud af feedet
+    if (editing && existing.audio_key) { oldAudioToDelete = existing.audio_key }
+    audioKey = null; audioType = null; audioBytes = null; audioDuration = null
+  }
 
   const now = new Date().toISOString()
-  const res = await env.DB.prepare(
-    `INSERT INTO episodes (slug, kind, day_number, title, place, body, audio_key, audio_type,
-       audio_bytes, duration, published_at, date_end, created_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
-  ).bind(
-    slug, kind, Number.isFinite(dayNumber) ? dayNumber : null, title, place || null, '',
-    audioKey, audioType, audioBytes, Number.isFinite(duration) ? duration : null,
-    publishedAt, dateEnd, now
-  ).run()
+  let episodeId = editId
 
-  const episodeId = res.meta.last_row_id
+  if (editing) {
+    await env.DB.prepare(
+      `UPDATE episodes SET kind=?, day_number=?, title=?, place=?, audio_key=?, audio_type=?,
+         audio_bytes=?, duration=?, published_at=?, date_end=? WHERE id=?`
+    ).bind(
+      kind, Number.isFinite(dayNumber) ? dayNumber : null, title, place || null,
+      audioKey, audioType, audioBytes, audioDuration, publishedAt, dateEnd, editId
+    ).run()
+  } else {
+    const res = await env.DB.prepare(
+      `INSERT INTO episodes (slug, kind, day_number, title, place, body, audio_key, audio_type,
+         audio_bytes, duration, published_at, date_end, created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    ).bind(
+      slug, kind, Number.isFinite(dayNumber) ? dayNumber : null, title, place || null, '',
+      audioKey, audioType, audioBytes, audioDuration, publishedAt, dateEnd, now
+    ).run()
+    episodeId = res.meta.last_row_id
+  }
 
-  // Blokke: en ordnet liste af tekst, noter, overskrifter, citater og billeder.
-  // Filerne kommer separat og henvises til med filIndex.
+  // Blokke
   let spec = []
   try { spec = JSON.parse(String(form.get('blocks') || '[]')) } catch (e) { spec = [] }
   const blockFiles = form.getAll('blockfile')
 
+  let previousKeys = []
+  if (editing) {
+    const { results } = await env.DB.prepare(
+      `SELECT media_key FROM blocks WHERE episode_id = ? AND media_key IS NOT NULL`
+    ).bind(editId).all()
+    previousKeys = results.map(r => r.media_key)
+    await env.DB.prepare(`DELETE FROM blocks WHERE episode_id = ?`).bind(editId).run()
+  }
+
+  const keptKeys = []
   for (let i = 0; i < spec.length; i++) {
     const b = spec[i] || {}
     const type = ['text', 'note', 'heading', 'quote', 'image'].includes(b.type) ? b.type : 'text'
     let mediaKey = null, w = null, h = null
 
     if (type === 'image') {
-      const f = blockFiles[b.fileIndex]
-      if (!f || typeof f !== 'object' || !f.size) continue
-      const ftype = f.type || 'image/jpeg'
-      mediaKey = `photos/${slug}-${i + 1}-${crypto.randomUUID().slice(0, 8)}.${extFor(ftype, 'jpg', f.name)}`
-      await env.MEDIA.put(mediaKey, f.stream(), { httpMetadata: { contentType: ftype } })
-      w = Number.isFinite(b.width) ? b.width : null
-      h = Number.isFinite(b.height) ? b.height : null
+      if (b.media_key) {
+        // Billede der allerede ligger i R2 og stadig er i brug
+        mediaKey = b.media_key
+        keptKeys.push(mediaKey)
+        w = Number.isFinite(b.width) ? b.width : null
+        h = Number.isFinite(b.height) ? b.height : null
+      } else {
+        const f = blockFiles[b.fileIndex]
+        if (!f || typeof f !== 'object' || !f.size) continue
+        const ftype = f.type || 'image/jpeg'
+        mediaKey = `photos/${slug}-${i + 1}-${crypto.randomUUID().slice(0, 8)}.${extFor(ftype, 'jpg', f.name)}`
+        await env.MEDIA.put(mediaKey, f.stream(), { httpMetadata: { contentType: ftype } })
+        w = Number.isFinite(b.width) ? b.width : null
+        h = Number.isFinite(b.height) ? b.height : null
+      }
     } else if (!String(b.content || '').trim()) {
       continue
     }
@@ -309,10 +367,17 @@ async function createEpisode(request, env) {
     ).run()
   }
 
-  return json({ ok: true, slug, id: episodeId })
+  // Ryd op i filer, der ikke længere henvises til
+  const orphans = previousKeys.filter(k => !keptKeys.includes(k))
+  if (oldAudioToDelete) orphans.push(oldAudioToDelete)
+  if (orphans.length) {
+    try { await env.MEDIA.delete(orphans) } catch (err) { console.error('R2 oprydning fejlede', err) }
+  }
+
+  return json({ ok: true, slug, id: episodeId, edited: editing })
 }
 
-/* ---------- stående elementer ---------- */
+/* ---------- stående elementer: lokation, notesblok, portræt ---------- */
 
 const SITE_KEYS = ['location', 'notepad', 'portrait_name', 'portrait_text', 'trip_start']
 
@@ -369,6 +434,25 @@ async function saveSite(request, env) {
   }
 
   return json({ ok: true, site: await readSite(env) })
+}
+
+/* ---------- læs ét indslag til redigering ---------- */
+
+async function readEpisode(request, env, idRaw) {
+  const fail = authFailure(request, env)
+  if (fail) return json({ error: fail }, 401)
+
+  const id = parseInt(idRaw, 10)
+  if (!Number.isFinite(id)) return json({ error: 'Ugyldigt id' }, 400)
+
+  const ep = await env.DB.prepare(`SELECT * FROM episodes WHERE id = ?`).bind(id).first()
+  if (!ep) return json({ error: 'Indslaget findes ikke' }, 404)
+
+  const { results: blocks } = await env.DB.prepare(
+    `SELECT * FROM blocks WHERE episode_id = ? ORDER BY position, id`
+  ).bind(id).all()
+
+  return json({ episode: ep, blocks })
 }
 
 /* ---------- oversigt og sletning ---------- */
