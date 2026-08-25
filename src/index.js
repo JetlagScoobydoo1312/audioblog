@@ -13,6 +13,11 @@ export default {
       if (request.method === 'GET' && path === '/abonner') return html(subscribePage(env, url.origin))
       if (request.method === 'GET' && path === '/api/site') return await getSite(request, env)
       if (request.method === 'POST' && path === '/api/site') return await saveSite(request, env)
+      if (request.method === 'GET' && path === '/api/dogs') return await listDogs(request, env)
+      if (request.method === 'POST' && path === '/api/dogs') return await addDog(request, env)
+      if (request.method === 'DELETE' && path.startsWith('/api/dogs/')) {
+        return await deleteDog(request, env, path.slice('/api/dogs/'.length))
+      }
       if (request.method === 'GET' && path.startsWith('/dag/')) {
         return await handleEpisode(env, decodeURIComponent(path.slice(5)), url.origin)
       }
@@ -61,9 +66,12 @@ async function handleIndex(env) {
     const { results: blocks } = await env.DB.prepare(
       `SELECT * FROM blocks WHERE episode_id = ? ORDER BY position, id`
     ).bind(ep.id).all()
-    rows.push({ ep, blocks })
+    const c = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM comments WHERE episode_id = ? AND hidden = 0`
+    ).bind(ep.id).first()
+    rows.push({ ep, blocks, commentCount: c?.n || 0 })
   }
-  return html(indexPage(env, rows, await readSite(env)))
+  return html(indexPage(env, rows, await readSite(env), await readDogs(env)))
 }
 
 async function handleEpisode(env, slug, origin) {
@@ -78,7 +86,7 @@ async function handleEpisode(env, slug, origin) {
     `SELECT * FROM comments WHERE episode_id = ? AND hidden = 0 ORDER BY created_at ASC, id ASC`
   ).bind(ep.id).all()
 
-  return html(episodePage(env, ep, blocks, comments, origin, await readSite(env)))
+  return html(episodePage(env, ep, blocks, comments, origin, await readSite(env), await readDogs(env)))
 }
 
 /* ---------- media fra R2, med Range så lyd kan spoles ---------- */
@@ -434,6 +442,73 @@ async function saveSite(request, env) {
   }
 
   return json({ ok: true, site: await readSite(env) })
+}
+
+/* ---------- hunde ---------- */
+
+async function readDogs(env) {
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT * FROM dogs ORDER BY created_at DESC, id DESC LIMIT 60`
+    ).all()
+    return results
+  } catch (err) {
+    // Tabellen findes måske ikke endnu
+    console.error('hunde-tabel utilgængelig', err)
+    return []
+  }
+}
+
+async function listDogs(request, env) {
+  const fail = authFailure(request, env)
+  if (fail) return json({ error: fail }, 401)
+  return json({ dogs: await readDogs(env) })
+}
+
+async function addDog(request, env) {
+  const fail = authFailure(request, env)
+  if (fail) return json({ error: fail }, 401)
+
+  const form = await request.formData()
+  const img = form.get('image')
+  if (!img || typeof img !== 'object' || !img.size) {
+    return json({ error: 'Vælg et billede af hunden' }, 400)
+  }
+
+  const type = img.type || 'image/jpeg'
+  const key = `dogs/${crypto.randomUUID().slice(0, 12)}.${extFor(type, 'jpg', img.name)}`
+  await env.MEDIA.put(key, img.stream(), { httpMetadata: { contentType: type } })
+
+  const w = parseInt(form.get('width'), 10)
+  const h = parseInt(form.get('height'), 10)
+
+  const res = await env.DB.prepare(
+    `INSERT INTO dogs (media_key, name, note, width, height, created_at) VALUES (?,?,?,?,?,?)`
+  ).bind(
+    key,
+    String(form.get('name') || '').trim() || null,
+    String(form.get('note') || '').trim() || null,
+    Number.isFinite(w) ? w : null,
+    Number.isFinite(h) ? h : null,
+    new Date().toISOString()
+  ).run()
+
+  return json({ ok: true, id: res.meta.last_row_id })
+}
+
+async function deleteDog(request, env, idRaw) {
+  const fail = authFailure(request, env)
+  if (fail) return json({ error: fail }, 401)
+
+  const id = parseInt(idRaw, 10)
+  if (!Number.isFinite(id)) return json({ error: 'Ugyldigt id' }, 400)
+
+  const dog = await env.DB.prepare(`SELECT media_key FROM dogs WHERE id = ?`).bind(id).first()
+  if (!dog) return json({ error: 'Hunden findes ikke' }, 404)
+
+  try { await env.MEDIA.delete(dog.media_key) } catch (e) { console.error(e) }
+  await env.DB.prepare(`DELETE FROM dogs WHERE id = ?`).bind(id).run()
+  return json({ ok: true })
 }
 
 /* ---------- læs ét indslag til redigering ---------- */
