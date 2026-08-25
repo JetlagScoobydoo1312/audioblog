@@ -122,13 +122,21 @@ body {
   border-radius: 12px 3px 10px 4px / 4px 10px 3px 12px;
 }
 .card.portrait b { font-size: .88rem; }
-.card .ny {
-  display: inline-block; background: var(--hot); color: var(--paper);
-  font-size: .58rem; letter-spacing: .14em; padding: 0 .3rem; margin-left: .35rem;
-  animation: blink 1.1s step-end infinite; vertical-align: .12em;
+.card.dogs { transform: rotate(.9deg); }
+.dogrid { display: grid; grid-template-columns: 1fr 1fr; gap: .45rem; }
+.dogrid a { text-decoration: none; color: var(--ink); display: block; }
+.dogrid a:hover { background: none; }
+.dogrid img {
+  width: 100%; aspect-ratio: 1; object-fit: cover; display: block;
+  border: 1.5px solid var(--ink);
+  border-radius: 10px 3px 8px 4px / 4px 8px 3px 10px;
 }
-@keyframes blink { 0%, 60% { opacity: 1 } 61%, 100% { opacity: 0 } }
-@media (prefers-reduced-motion: reduce) { .card .ny { animation: none } }
+.dogrid a:nth-child(2n) img { border-radius: 3px 10px 4px 8px / 8px 4px 10px 3px; }
+.dogrid a:hover img { outline: 2px solid var(--hot); outline-offset: 1px; }
+.dogrid span {
+  display: block; font-size: .64rem; text-align: center;
+  margin-top: .1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 @media (min-width: 74rem) {
   .standing { position: absolute; top: 12rem; width: 14.5rem; margin: 0; }
   .standing.left  { left: -17rem; }
@@ -146,6 +154,7 @@ body {
 }
 @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
 @media (prefers-reduced-motion: reduce) { .here .dot { animation: none } }
+.here b { font-weight: 700; letter-spacing: .06em; }
 .here .days { color: var(--faint); }
 
 /* påskeæg: typografisk kaos */
@@ -311,6 +320,13 @@ p { margin: 0 0 1rem; }
 }
 article::after { content: ""; display: block; clear: both; }
 
+.teaser {
+  font-family: var(--type); font-size: .76rem; margin: 1.4rem 0 0;
+  padding-top: .5rem; border-top: 1px dotted var(--ink);
+  display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; align-items: baseline; clear: both;
+}
+.teaser .write { margin-left: auto; }
+
 /* ---------- kommentarer ---------- */
 .comments { margin-top: 2.5rem; }
 .comments h3 {
@@ -373,14 +389,7 @@ footer.site {
 
 const UNDERSCRIBBLE = `<svg viewBox="0 0 200 6" preserveAspectRatio="none" aria-hidden="true"><path d="M1 4 C 20 1, 38 5, 57 3 S 95 1, 114 4 S 152 5, 171 2 S 195 4, 199 3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>`
 
-/** Blinkende NY! hvis elementet er ændret inden for tre døgn. */
-function freshBadge(iso) {
-  if (!iso) return ''
-  const age = Date.now() - new Date(iso).getTime()
-  return (age >= 0 && age < 3 * 86400000) ? '<span class="ny">NY!</span>' : ''
-}
-
-function standingHtml(site) {
+function standingHtml(site, dogs) {
   if (!site) return { left: '', right: '' }
   const notepad = site.notepad?.value
   const pName = site.portrait_name?.value
@@ -388,23 +397,35 @@ function standingHtml(site) {
   const pImg = site.portrait_image?.media_key
 
   const noteCard = notepad ? `<div class="card notepad">
-    <h4>Notesblok${freshBadge(site.notepad?.updated_at)}${UNDERSCRIBBLE}</h4>${prose(notepad)}
+    <h4>Notesblok${UNDERSCRIBBLE}</h4>${prose(notepad)}
   </div>` : ''
 
   const portraitCard = (pName || pText || pImg) ? `<div class="card portrait">
-    <h4>Mødt undervejs${freshBadge(site.portrait_name?.updated_at)}${UNDERSCRIBBLE}</h4>
+    <h4>Mødt undervejs${UNDERSCRIBBLE}</h4>
     ${pImg ? `<img src="/media/${esc(pImg)}" alt="${esc(pName || 'Portræt')}" loading="lazy">` : ''}
     ${pName ? `<p><b>${esc(pName)}</b></p>` : ''}
     ${pText ? prose(pText) : ''}
   </div>` : ''
 
+  const dogCard = (dogs && dogs.length) ? `<div class="card dogs">
+    <h4>Hunde mødt: ${dogs.length}${UNDERSCRIBBLE}</h4>
+    <div class="dogrid">
+      ${dogs.slice(0, 12).map(d => `<a href="/media/${esc(d.media_key)}" target="_blank" rel="noopener"
+        title="${esc([d.name, d.note].filter(Boolean).join(' — ') || 'Hund')}">
+        <img src="/media/${esc(d.media_key)}" alt="${esc(d.name || 'Hund')}" loading="lazy">
+        ${d.name ? `<span>${esc(d.name)}</span>` : ''}
+      </a>`).join('')}
+    </div>
+  </div>` : ''
+
+  const rightStack = [noteCard, dogCard].filter(Boolean).join('')
   return {
     left: portraitCard ? `<div class="standing left">${portraitCard}</div>` : '',
-    right: noteCard ? `<div class="standing right">${noteCard}</div>` : ''
+    right: rightStack ? `<div class="standing right">${rightStack}</div>` : ''
   }
 }
 
-function hereHtml(site) {
+function hereHtml(site, who) {
   const where = site?.location?.value
   if (!where) return ''
   const start = site?.trip_start?.value
@@ -422,13 +443,14 @@ function hereHtml(site) {
       if (label) days = `<span class="days" hidden data-days="${esc(label)}"></span>`
     }
   }
-  return `<p class="here"><span class="dot" role="button" tabindex="0" aria-label="Vis hvor længe rejsen har varet"></span>Lige nu: ${esc(where)}${days}</p>`
+  const label = who ? `Hvor ${who}?` : 'Hvor?'
+  return `<p class="here"><span class="dot" role="button" tabindex="0" aria-label="Vis hvor længe rejsen har varet"></span><b>${esc(label.toUpperCase())}</b> ${esc(where)}${days}</p>`
 }
 
-export function layout(env, { title, description, body, canonical, ogImage, site }) {
+export function layout(env, { title, description, body, canonical, ogImage, site, dogs }) {
   const siteName = env.SITE_TITLE || 'Audioblog'
   const full = title ? `${title} — ${siteName}` : siteName
-  const standing = standingHtml(site)
+  const standing = standingHtml(site, dogs)
   return `<!doctype html>
 <!--
        .-.
@@ -459,7 +481,7 @@ ${ogImage ? `<meta property="og:image" content="${esc(ogImage)}">` : ''}
   <header class="masthead">
     <h1><a href="/">${esc(siteName)}</a></h1>
     <p class="tagline">${esc(env.SITE_TAGLINE || '')}</p>
-    ${hereHtml(site)}
+    ${hereHtml(site, env.SITE_AUTHOR)}
     <p class="subscribe"><a href="/abonner">→ følg med i din podcast-app</a></p>
   </header>
   ${standing.left}${standing.right}
@@ -619,7 +641,7 @@ function commentsHtml(ep, comments) {
       </div>`).join('')
     : `<p class="formnote">ingen kommentarer endnu.</p>`
 
-  return `<section class="comments">
+  return `<section class="comments" id="kommentarer">
   <h3>${comments.length} ${comments.length === 1 ? 'kommentar' : 'kommentarer'}</h3>
   ${list}
   <details class="cwrap">
@@ -645,7 +667,16 @@ function stampHtml(ep) {
   return `<div class="stamp">${bits.join(' &nbsp;·&nbsp; ')}</div>`
 }
 
-function articleHtml(ep, blocks, comments, { full }) {
+function commentTeaser(ep, n) {
+  const count = n === 0 ? 'Ingen kommentarer endnu'
+    : `${n} ${n === 1 ? 'kommentar' : 'kommentarer'}`
+  return `<p class="teaser">
+    <a href="/dag/${esc(ep.slug)}#kommentarer">${count}</a>
+    <a class="write" href="/dag/${esc(ep.slug)}#kommentarer">Skriv en kommentar →</a>
+  </p>`
+}
+
+function articleHtml(ep, blocks, comments, { full, commentCount }) {
   const heading = full
     ? `<h2>${esc(ep.title)}</h2>`
     : `<h2><a href="/dag/${esc(ep.slug)}">${esc(ep.title)}</a></h2>`
@@ -659,24 +690,24 @@ function articleHtml(ep, blocks, comments, { full }) {
   ${heading}
   ${playerHtml(ep)}
   ${body}
-  ${full ? commentsHtml(ep, comments) : ''}
+  ${full ? commentsHtml(ep, comments) : commentTeaser(ep, commentCount || 0)}
 </article>`
 }
 
-export function indexPage(env, rows, site) {
+export function indexPage(env, rows, site, dogs) {
   if (!rows.length) {
     return layout(env, {
-      description: env.SITE_TAGLINE, site,
+      description: env.SITE_TAGLINE, site, dogs,
       body: `<p class="empty">Ikke noget her endnu. Kom tilbage.</p>`
     })
   }
   const body = rows
-    .map(r => articleHtml(r.ep, r.blocks, [], { full: false }))
+    .map(r => articleHtml(r.ep, r.blocks, [], { full: false, commentCount: r.commentCount }))
     .join(`<div class="sep">${SQUIGGLE}</div>`)
-  return layout(env, { description: env.SITE_TAGLINE, body, site })
+  return layout(env, { description: env.SITE_TAGLINE, body, site, dogs })
 }
 
-export function episodePage(env, ep, blocks, comments, origin, site) {
+export function episodePage(env, ep, blocks, comments, origin, site, dogs) {
   const firstText = blocks.find(b => b.type === 'text' || b.type === 'note')
   const desc = String(firstText?.content || ep.body || '').replace(/\s+/g, ' ').slice(0, 180)
   const firstImg = blocks.find(b => b.type === 'image' && b.media_key)
@@ -686,7 +717,7 @@ export function episodePage(env, ep, blocks, comments, origin, site) {
     title: ep.title, description: desc,
     canonical: `${origin}/dag/${ep.slug}`,
     ogImage: firstImg ? `${origin}/media/${firstImg.media_key}` : undefined,
-    body, site
+    body, site, dogs
   })
 }
 
