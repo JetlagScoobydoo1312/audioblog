@@ -58,6 +58,17 @@ button.wide{width:100%;padding:.7rem;font-size:.85rem}
 #status,#sitestatus{margin-top:.9rem;font-size:.8rem;min-height:1.3em}
 #sitestatus.err{color:var(--hot)} #sitestatus.ok{color:#0A7A3D}
 #portraitnow img.thumb{max-height:7rem;width:auto}
+#dogpreview img.thumb{max-height:7rem;width:auto}
+#dogstatus{margin-top:.6rem;font-size:.8rem;min-height:1.2em}
+#dogstatus.err{color:var(--hot)} #dogstatus.ok{color:#0A7A3D}
+.doggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(4.5rem,1fr));gap:.4rem;margin-top:.5rem}
+.dogcell{position:relative}
+.dogcell img{width:100%;aspect-ratio:1;object-fit:cover;border:1.5px solid var(--ink);display:block}
+.dogcell button{position:absolute;top:.15rem;right:.15rem;padding:0;width:1.25rem;height:1.25rem;
+  font-size:.65rem;line-height:1;border:1px solid var(--ink);background:var(--paper);color:var(--ink)}
+.dogcell button.armed{background:var(--hot);border-color:var(--hot);color:var(--paper)}
+.dogcell span{display:block;font-size:.62rem;text-align:center;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
 #status.err{color:var(--hot)} #status.ok{color:#0A7A3D}
 .meta{font-size:.72rem;color:var(--faint);margin-top:.3rem}
 .meta.warn{color:var(--hot)}
@@ -156,6 +167,19 @@ button.wide{width:100%;padding:.7rem;font-size:.85rem}
   </fieldset>
 
   <fieldset>
+    <legend>Hunde</legend>
+    <label><span>Billede af hunden</span><input type="file" id="dogfile" accept="image/*"></label>
+    <div id="dogpreview"></div>
+    <div class="row">
+      <label><span>Navn (valgfrit)</span><input type="text" id="dogname" maxlength="60" placeholder="Bruno"></label>
+      <label><span>Note (valgfrit)</span><input type="text" id="dognote" maxlength="120" placeholder="Sov foran bageriet"></label>
+    </div>
+    <button type="button" id="adddog" class="wide">Tilføj hund</button>
+    <div id="dogstatus"></div>
+    <div id="doglist"></div>
+  </fieldset>
+
+  <fieldset>
     <legend>Udgivet</legend>
     <div id="eplist"><p class="hint">henter…</p></div>
     <p class="hint">Sletning fjerner både posten og de tilhørende lyd- og billedfiler. Kan ikke fortrydes.</p>
@@ -178,7 +202,7 @@ function token(){ try { return localStorage.getItem(KEY) || ''; } catch(e){ retu
 function show(){
   var on = !!token();
   gate.hidden = on; form.hidden = !on; manage.hidden = !on;
-  if (on) { loadList(); loadSite(); }
+  if (on) { loadList(); loadSite(); loadDogs(); }
 }
 show();
 
@@ -479,6 +503,89 @@ async function loadList(){
   } catch (err) {
     box.innerHTML = '<p class="hint">' + err.message + '</p>';
   }
+}
+
+/* ---- hunde ---- */
+var dogBlob = null, dogDims = null;
+
+document.getElementById('dogfile').addEventListener('change', async function(){
+  if (!this.files[0]) { dogBlob = null; return; }
+  try {
+    var out = await shrink(this.files[0], 1000);
+    dogBlob = out.blob; dogDims = { w: out.width, h: out.height };
+    document.getElementById('dogpreview').innerHTML =
+      '<img class="thumb" src="' + URL.createObjectURL(out.blob) + '" alt="Ny hund">';
+  } catch (err) { alert(err.message); }
+});
+
+document.getElementById('adddog').addEventListener('click', async function(){
+  var btn = this, st = document.getElementById('dogstatus');
+  if (!dogBlob) { st.className = 'err'; st.textContent = 'Vælg et billede først.'; return; }
+  btn.disabled = true; st.className = ''; st.textContent = 'uploader…';
+  var fd = new FormData();
+  fd.append('image', dogBlob, 'hund.jpg');
+  fd.append('name', document.getElementById('dogname').value);
+  fd.append('note', document.getElementById('dognote').value);
+  if (dogDims) { fd.append('width', dogDims.w); fd.append('height', dogDims.h); }
+  try {
+    var res = await fetch('/api/dogs', {
+      method: 'POST', headers: { 'authorization': 'Bearer ' + token() }, body: fd
+    });
+    var d = await res.json();
+    if (!res.ok) throw new Error(d.error || 'Kunne ikke tilføje hunden');
+    st.className = 'ok'; st.textContent = 'Tilføjet.';
+    dogBlob = null; dogDims = null;
+    document.getElementById('dogfile').value = '';
+    document.getElementById('dogname').value = '';
+    document.getElementById('dognote').value = '';
+    document.getElementById('dogpreview').innerHTML = '';
+    loadDogs();
+    setTimeout(function(){ st.textContent = ''; }, 2500);
+  } catch (err) {
+    st.className = 'err'; st.textContent = err.message;
+  } finally { btn.disabled = false; }
+});
+
+async function loadDogs(){
+  var box = document.getElementById('doglist');
+  try {
+    var res = await fetch('/api/dogs', { headers: { 'authorization': 'Bearer ' + token() } });
+    var data = await res.json();
+    if (!res.ok) return;
+    if (!data.dogs.length) { box.innerHTML = '<p class="hint">Ingen hunde endnu.</p>'; return; }
+    box.innerHTML = '<p class="hint">' + data.dogs.length + ' hunde. Klik krydset for at fjerne.</p>';
+    var grid = document.createElement('div');
+    grid.className = 'doggrid';
+    data.dogs.forEach(function(dog){
+      var cell = document.createElement('div');
+      cell.className = 'dogcell';
+      var im = document.createElement('img');
+      im.src = '/media/' + dog.media_key; im.alt = dog.name || 'Hund';
+      var x = document.createElement('button');
+      x.type = 'button'; x.textContent = '✕'; x.title = dog.name || 'Hund';
+      var armed = false, t = null;
+      x.addEventListener('click', async function(){
+        if (!armed) {
+          armed = true; x.textContent = '?'; x.classList.add('armed');
+          t = setTimeout(function(){ armed = false; x.textContent = '✕'; x.classList.remove('armed'); }, 4000);
+          return;
+        }
+        clearTimeout(t); x.disabled = true;
+        try {
+          var r = await fetch('/api/dogs/' + dog.id, {
+            method: 'DELETE', headers: { 'authorization': 'Bearer ' + token() }
+          });
+          if (!r.ok) throw new Error((await r.json()).error || 'Kunne ikke slette');
+          loadDogs();
+        } catch (e) { alert(e.message); x.disabled = false; armed = false; x.textContent = '✕'; x.classList.remove('armed'); }
+      });
+      var cap = document.createElement('span');
+      cap.textContent = dog.name || '';
+      cell.appendChild(im); cell.appendChild(x); if (dog.name) cell.appendChild(cap);
+      grid.appendChild(cell);
+    });
+    box.appendChild(grid);
+  } catch (e) { /* ikke kritisk */ }
 }
 
 /* ---- redigering ---- */
