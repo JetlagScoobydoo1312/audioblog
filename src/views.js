@@ -79,7 +79,17 @@ body {
 .wrap { max-width: 40rem; margin: 0 auto; padding: 2rem 1.25rem 7rem; position: relative; }
 
 /* ---------- stående elementer i marginen ---------- */
-.standing { display: flex; flex-direction: column; gap: 1rem; margin: 0 0 2.5rem; }
+/* Marginkortene findes kun på brede skærme. På mobil vises i stedet de
+   indskudte kopier, som ligger fordelt ned gennem feedet. */
+.standing { display: none; }
+.inlinecard { margin: 2.6rem 0; }
+/* Indskudt i feedet må kortene ikke tage en hel skærm */
+.inlinecard .card.portrait img { max-height: 17rem; object-fit: cover; object-position: center top; }
+.inlinecard .dogrid { grid-template-columns: repeat(3, 1fr); }
+.inlinecard .card { transform: none; }
+.inlinecard .card.notepad { transform: rotate(-.7deg); }
+.inlinecard .card.portrait { transform: rotate(.5deg); }
+.inlinecard .card.dogs { transform: rotate(-.4deg); }
 /* Kortene skal se tegnet ud, ikke sat. Uens hjørneradier giver en
    tuschstreg-agtig kant, og ::after lægger en streg mere lidt ved siden af,
    som om nogen har tegnet kassen to gange. */
@@ -138,7 +148,11 @@ body {
   margin-top: .1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 @media (min-width: 74rem) {
-  .standing { position: absolute; top: 12rem; width: 14.5rem; margin: 0; }
+  .inlinecard { display: none; }
+  .standing {
+    display: flex; flex-direction: column; gap: 1rem;
+    position: absolute; top: 12rem; width: 14.5rem; margin: 0;
+  }
   .standing.left  { left: -17rem; }
   .standing.right { right: -17rem; }
   .card.notepad  { transform: rotate(-1.6deg); }
@@ -390,7 +404,9 @@ footer.site {
 const UNDERSCRIBBLE = `<svg viewBox="0 0 200 6" preserveAspectRatio="none" aria-hidden="true"><path d="M1 4 C 20 1, 38 5, 57 3 S 95 1, 114 4 S 152 5, 171 2 S 195 4, 199 3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>`
 
 function standingHtml(site, dogs) {
-  if (!site) return { left: '', right: '' }
+  const empty = { left: '', right: '', inline: [] }
+  if (!site) return empty
+
   const notepad = site.notepad?.value
   const pName = site.portrait_name?.value
   const pText = site.portrait_text?.value
@@ -418,10 +434,13 @@ function standingHtml(site, dogs) {
     </div>
   </div>` : ''
 
+  // Samme kort renderes to steder: i marginen på brede skærme, og indskudt
+  // i feedet på smalle. Kun én af de to er synlig ad gangen.
   const rightStack = [noteCard, dogCard].filter(Boolean).join('')
   return {
     left: portraitCard ? `<div class="standing left">${portraitCard}</div>` : '',
-    right: rightStack ? `<div class="standing right">${rightStack}</div>` : ''
+    right: rightStack ? `<div class="standing right">${rightStack}</div>` : '',
+    inline: [noteCard, portraitCard, dogCard].filter(Boolean)
   }
 }
 
@@ -701,17 +720,28 @@ export function indexPage(env, rows, site, dogs) {
       body: `<p class="empty">Ikke noget her endnu. Kom tilbage.</p>`
     })
   }
-  const body = rows
-    .map(r => articleHtml(r.ep, r.blocks, [], { full: false, commentCount: r.commentCount }))
-    .join(`<div class="sep">${SQUIGGLE}</div>`)
-  return layout(env, { description: env.SITE_TAGLINE, body, site, dogs })
+  // På mobil skydes de stående kort ind mellem episoderne, ét ad gangen.
+  const cards = standingHtml(site, dogs).inline
+  const sep = `<div class="sep">${SQUIGGLE}</div>`
+  const parts = []
+  rows.forEach((r, i) => {
+    if (i > 0) parts.push(sep)
+    parts.push(articleHtml(r.ep, r.blocks, [], { full: false, commentCount: r.commentCount }))
+    if (cards[i]) parts.push(`<div class="inlinecard">${cards[i]}</div>`)
+  })
+  // Er der færre episoder end kort, kommer resten til sidst
+  cards.slice(rows.length).forEach(c => parts.push(`<div class="inlinecard">${c}</div>`))
+  return layout(env, { description: env.SITE_TAGLINE, body: parts.join(''), site, dogs })
 }
 
 export function episodePage(env, ep, blocks, comments, origin, site, dogs) {
   const firstText = blocks.find(b => b.type === 'text' || b.type === 'note')
   const desc = String(firstText?.content || ep.body || '').replace(/\s+/g, ' ').slice(0, 180)
   const firstImg = blocks.find(b => b.type === 'image' && b.media_key)
+  const cards = standingHtml(site, dogs).inline
+    .map(c => `<div class="inlinecard">${c}</div>`).join('')
   const body = `${articleHtml(ep, blocks, comments, { full: true })}
+    ${cards}
     <p class="backlink"><a href="/">← alt indhold</a></p>`
   return layout(env, {
     title: ep.title, description: desc,
